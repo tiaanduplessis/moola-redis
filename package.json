@@ -1,0 +1,37 @@
+{
+  "name": "moola-redis",
+  "version": "1.0.0",
+  "description": "Express-style redis cache middleware",
+  "license": "MIT",
+  "repository": {
+    "url": "https://github.com/tiaanduplessis/moola-redis",
+    "type": "git"
+  },
+  "homepage": "https://github.com/tiaanduplessis/moola-redis",
+  "bugs": "https://github.com/tiaanduplessis/moola-redis",
+  "main": "index.js",
+  "files": [
+    "index.js"
+  ],
+  "scripts": {
+    "test": "jest",
+    "format": "prettier-standard index.js",
+    "format:fix": "npm run format -- --fix",
+    "start": "npm run test",
+    "precommit": "npm test",
+    "pretest": "npm run format:fix"
+  },
+  "author": "tiaanduplessis <tiaanduplessis@hotmail.com>",
+  "devDependencies": {
+    "express": "^4.15.3",
+    "husky": "^0.14.3",
+    "jest": "^20.0.4",
+    "prettier-standard": "^6.0.0"
+  },
+  "dependencies": {
+    "@tiaanduplessis/json": "^1.1.2",
+    "add": "^2.0.6",
+    "redis": "^2.7.1",
+    "yarn": "^0.27.5"
+  }
+}
