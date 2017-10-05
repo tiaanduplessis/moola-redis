@@ -56,6 +56,8 @@
 
 ## Install
 
+[![Greenkeeper badge](https://badges.greenkeeper.io/tiaanduplessis/moola-redis.svg)](https://greenkeeper.io/)
+
 ```sh
 $ npm install moola-redis
 # OR
