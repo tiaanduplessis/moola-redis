@@ -25,13 +25,13 @@
   "devDependencies": {
     "express": "^4.15.3",
     "husky": "^0.14.3",
-    "jest": "^20.0.4",
-    "prettier-standard": "^6.0.0"
+    "jest": "^21.2.1",
+    "prettier-standard": "^7.0.1"
   },
   "dependencies": {
     "@tiaanduplessis/json": "^1.1.2",
     "add": "^2.0.6",
     "redis": "^2.7.1",
-    "yarn": "^0.27.5"
+    "yarn": "^1.1.0"
   }
 }
