@@ -89,6 +89,10 @@ Creates cache middleware with options:
 - `redis: Object` - Standard configuration options for [redis client](https://www.npmjs.com/package/redis#rediscreateclient)
 - `duration: Number` - Amount in seconds to cache for
 
+The existing `redisOpts` option is also supported. A value other than
+`undefined` takes precedence over `redis`; otherwise the documented `redis`
+option is used. Omitting both keeps the Redis client defaults.
+
 ## Contributing
 
 Contributions are welcome!
