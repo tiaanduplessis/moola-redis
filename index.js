@@ -36,7 +36,6 @@ const moolaRedis = (opts = {}) => {
             return
           }
           res.send(data)
-          next()
         })
       } else {
         res.sendCached = body => {
