@@ -6,7 +6,7 @@ const json = require('@tiaanduplessis/json')
 const redis = require('redis')
 
 const moolaRedis = (opts = {}) => {
-  const { duration, redisOpts } = opts
+  const { duration, redisOpts = opts.redis } = opts
 
   assert.equal(typeof duration, 'number', 'duration should be a number')
   assert.equal(typeof redis, 'object', 'redis should be a object of options')

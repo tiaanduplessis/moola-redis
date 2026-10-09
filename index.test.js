@@ -50,6 +50,66 @@ test('passes redisOpts through and creates one client per middleware', () => {
   expect(client.get).toHaveBeenCalledTimes(2)
 })
 
+test('passes the documented redis options to the client unchanged', () => {
+  const options = Object.freeze({ host: 'synthetic.invalid', port: 6381, db: 3 })
+  cache({ duration: 30, redis: options })
+  expect(redis.createClient).toHaveBeenCalledTimes(1)
+  expect(redis.createClient.mock.calls[0][0]).toBe(options)
+})
+
+test('keeps explicit redisOpts ahead of the documented redis option', () => {
+  const options = { host: 'documented.invalid', port: 6381 }
+  const redisOpts = { host: 'legacy.invalid', port: 6382 }
+  cache({ duration: 30, redis: options, redisOpts })
+  expect(redis.createClient.mock.calls[0][0]).toBe(redisOpts)
+})
+
+test('uses the documented option when redisOpts is explicitly undefined', () => {
+  const options = { host: 'synthetic.invalid', port: 6381 }
+  cache({ duration: 30, redis: options, redisOpts: undefined })
+  expect(redis.createClient.mock.calls[0][0]).toBe(options)
+})
+
+test('preserves explicit null, falsy, and empty legacy options', () => {
+  ;[null, false, 0, '', {}].forEach(redisOpts => {
+    redis.createClient.mockClear()
+    const options = { duration: 30, redisOpts }
+    Object.defineProperty(options, 'redis', {
+      get () { throw new Error('The fallback must not be read') }
+    })
+    cache(options)
+    expect(redis.createClient).toHaveBeenCalledTimes(1)
+    expect(redis.createClient.mock.calls[0][0]).toBe(redisOpts)
+  })
+})
+
+test('reads the documented fallback once when it is needed', () => {
+  const config = { host: 'synthetic.invalid', port: 6381 }
+  let reads = 0
+  const options = { duration: 30 }
+  Object.defineProperty(options, 'redis', {
+    get () {
+      reads++
+      return config
+    }
+  })
+  cache(options)
+  expect(reads).toBe(1)
+  expect(redis.createClient.mock.calls[0][0]).toBe(config)
+})
+
+test('documented options preserve cache writes, expiry, and callbacks', () => {
+  const options = { host: 'synthetic.invalid', port: 6381 }
+  const { res, next } = dispatch(cache({ duration: 45, redis: options }), request('/alias'))
+  expect(redis.createClient.mock.calls[0][0]).toBe(options)
+  reply(null, null)
+  const body = { value: 'fixture' }
+  res.sendCached(body)
+  expect(client.setex).toHaveBeenCalledWith('/alias.undefined.undefined', 45, JSON.stringify(body))
+  expect(res.send).toHaveBeenCalledWith(body)
+  expect(next).toHaveBeenCalledTimes(1)
+})
+
 test('passes undefined client options when redisOpts is omitted', () => {
   cache({ duration: 30 })
   expect(redis.createClient).toHaveBeenCalledWith(undefined)
