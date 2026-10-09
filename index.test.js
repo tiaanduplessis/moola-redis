@@ -189,15 +189,14 @@ test('plain send on a miss keeps its existing non-caching behavior', () => {
   expect(client.setex).not.toHaveBeenCalled()
 })
 
-test('a hit parses JSON, sends it, and continues once without rewriting it', () => {
+test('a hit parses JSON and sends it without continuing or rewriting it', () => {
   const { res, next } = dispatch(cache({ duration: 30 }))
   const originalSend = res.send
   reply(null, '{"answer":42}')
   expect(res.sendCached).toBe(originalSend)
   expect(res.send).toHaveBeenCalledTimes(1)
   expect(res.send).toHaveBeenCalledWith({ answer: 42 })
-  expect(next).toHaveBeenCalledTimes(1)
-  expect(next).toHaveBeenCalledWith()
+  expect(next).not.toHaveBeenCalled()
   expect(client.setex).not.toHaveBeenCalled()
 })
 
@@ -207,7 +206,7 @@ test('cached JSON primitives are passed to send unchanged', () => {
     const { res, next } = dispatch(cache({ duration: 30 }))
     reply(null, value)
     expect(res.send).toHaveBeenCalledWith(JSON.parse(value))
-    expect(next).toHaveBeenCalledTimes(1)
+    expect(next).not.toHaveBeenCalled()
   })
   expect(client.setex).not.toHaveBeenCalled()
 })
@@ -277,7 +276,8 @@ test('keeps standard Accept representations in separate cache entries', () => {
   expect(client.setex).toHaveBeenCalledTimes(2)
   expect(client.setex.mock.calls[0][1]).toBe(45)
   expect(client.setex.mock.calls[1][1]).toBe(45)
-  ;[first, second, jsonHit, htmlHit].forEach(result => expect(result.next).toHaveBeenCalledTimes(1))
+  ;[first, second].forEach(result => expect(result.next).toHaveBeenCalledTimes(1))
+  ;[jsonHit, htmlHit].forEach(result => expect(result.next).not.toHaveBeenCalled())
 })
 
 test('separates dotted URL and legacy header components', () => {
@@ -358,4 +358,126 @@ test('leaves earlier-format entries untouched while filling the new cache', () =
   expect(values.get(oldKey)).toBe(oldValue)
   expect(values.size).toBe(2)
   expect(client.setex).toHaveBeenCalledWith('["/migration",null,null,null]', 30, '{"generation":"new"}')
+})
+
+const { IncomingMessage, ServerResponse } = require('http')
+const { Duplex } = require('stream')
+
+const nativeResponse = () => {
+  const chunks = []
+  const socket = new Duplex({
+    read () {},
+    write (chunk, encoding, callback) {
+      chunks.push(Buffer.from(chunk))
+      callback()
+    }
+  })
+  const req = new IncomingMessage(socket)
+  req.method = 'GET'
+  req.url = '/native'
+  req.httpVersionMajor = 1
+  req.httpVersionMinor = 1
+  req.headers = {}
+  req.header = name => req.headers[name.toLowerCase()]
+  const res = new ServerResponse(req)
+  res.assignSocket(socket)
+  res.send = body => {
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify(body))
+  }
+  return {
+    req,
+    res,
+    wire: () => Buffer.concat(chunks).toString(),
+    close: () => {
+      if (typeof socket.destroy === 'function') socket.destroy()
+      else socket.end()
+    }
+  }
+}
+
+test('a native cached response does not invoke a route or write twice', () => {
+  const fixture = nativeResponse()
+  let routeCalls = 0
+  const errors = []
+  const next = jest.fn(error => {
+    if (error) {
+      errors.push(error)
+      return
+    }
+    routeCalls++
+    fixture.res.send({ source: 'route' })
+  })
+  try {
+    cache({ duration: 30 })(fixture.req, fixture.res, next)
+    expect(fixture.res.finished).toBe(false)
+    reply(null, '{"source":"cache"}')
+    expect(routeCalls).toBe(0)
+    expect(errors).toEqual([])
+    expect(next).not.toHaveBeenCalled()
+    expect(fixture.res.headersSent).toBe(true)
+    expect(fixture.res.finished).toBe(true)
+    expect(fixture.wire()).toMatch(/\{"source":"cache"\}/)
+    expect(client.setex).not.toHaveBeenCalled()
+  } finally {
+    fixture.close()
+  }
+})
+
+test('a native miss still invokes its route once and stores the response', () => {
+  const fixture = nativeResponse()
+  const next = jest.fn(error => {
+    if (error) throw error
+    fixture.res.sendCached({ source: 'route' })
+  })
+  try {
+    cache({ duration: 45 })(fixture.req, fixture.res, next)
+    expect(next).not.toHaveBeenCalled()
+    reply(null, null)
+    expect(next).toHaveBeenCalledTimes(1)
+    expect(next).toHaveBeenCalledWith()
+    expect(fixture.res.finished).toBe(true)
+    expect(fixture.wire()).toMatch(/\{"source":"route"\}/)
+    expect(client.setex).toHaveBeenCalledWith('["/native",null,null,null]', 45, '{"source":"route"}')
+  } finally {
+    fixture.close()
+  }
+})
+
+test('native response lookup and parse failures still continue once without sending', () => {
+  ;['lookup', 'parse'].forEach(kind => {
+    const fixture = nativeResponse()
+    const next = jest.fn()
+    const error = new Error('fixture lookup failure')
+    try {
+      cache({ duration: 30 })(fixture.req, fixture.res, next)
+      if (kind === 'lookup') reply(error)
+      else reply(null, '{invalid')
+      expect(next).toHaveBeenCalledTimes(1)
+      if (kind === 'lookup') expect(next).toHaveBeenCalledWith(error)
+      else expect(next.mock.calls[0][0]).toBeInstanceOf(Error)
+      expect(fixture.res.headersSent).toBe(false)
+      expect(fixture.res.finished).toBe(false)
+      expect(client.setex).not.toHaveBeenCalled()
+    } finally {
+      fixture.close()
+    }
+    client.get.mockClear()
+  })
+})
+
+test('a native send failure on a cache hit still reaches the error continuation once', () => {
+  const fixture = nativeResponse()
+  const next = jest.fn()
+  try {
+    fixture.res.writeHead(200, { 'X-Fixture': 'already sent' })
+    cache({ duration: 30 })(fixture.req, fixture.res, next)
+    reply(null, '{"source":"cache"}')
+    expect(next).toHaveBeenCalledTimes(1)
+    expect(next.mock.calls[0][0].message).toMatch(/headers.*sent/i)
+    expect(fixture.res.finished).toBe(false)
+    expect(client.setex).not.toHaveBeenCalled()
+  } finally {
+    fixture.close()
+  }
 })

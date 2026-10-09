@@ -76,11 +76,16 @@ const cache = require('moola-redis')
 app.use(cache({duration: 30, redis: {port: 6379}}))
 
 app.get('/', (req, res) => {
-  res.send({test: true})
+  res.sendCached({test: true})
 })
 
 app.listen(8000)
 ```
+
+A cache hit sends the stored body and stops the middleware chain. A miss calls
+`next()` so the route can produce a response. Use `res.sendCached(body)` to store
+and send that response; ordinary `res.send(body)` sends without caching.
+Lookup and JSON parsing errors continue through `next(error)`.
 
 ## API
 
