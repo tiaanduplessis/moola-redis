@@ -50,6 +50,7 @@
   <li><a href="#install">Install</a></li>
   <li><a href="#api">API</a></li>
   <li><a href="#usage">Usage</a></li>
+  <li><a href="#cache-keys">Cache keys</a></li>
   <li><a href="#contribute">Contribute</a></li>
   <li><a href="#license">License</a></li>
 </details>
@@ -92,6 +93,17 @@ Creates cache middleware with options:
 The existing `redisOpts` option is also supported. A value other than
 `undefined` takes precedence over `redis`; otherwise the documented `redis`
 option is used. Omitting both keeps the Redis client defaults.
+
+## Cache keys
+
+Cache entries vary by URL, standard `Accept`, legacy `Accepts`, and
+`Accept-Encoding` headers. These values form an unambiguous JSON tuple, so
+periods inside a URL or header cannot join otherwise different cache keys.
+Missing and empty header values remain distinct.
+
+This changes the Redis key format. Deploying it can cause cold-cache misses
+until new entries are stored. Existing entries are left to expire under their
+original TTL; the middleware does not delete or migrate them.
 
 ## Contributing
 
