@@ -14,9 +14,12 @@ const moolaRedis = (opts = {}) => {
   const client = redis.createClient(redisOpts)
 
   const handler = (req, res, next) => {
-    const key = `${req.url || req.originalUrl}.${req.header(
-      'accepts'
-    )}.${req.header('accept-encoding')}`
+    const key = JSON.stringify([
+      req.url || req.originalUrl,
+      req.header('accept'),
+      req.header('accepts'),
+      req.header('accept-encoding')
+    ])
 
     client.get(key, (error, value) => {
       if (error) {

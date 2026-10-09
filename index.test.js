@@ -6,10 +6,13 @@ jest.mock('redis', () => ({ createClient: jest.fn() }))
 const redis = require('redis')
 const cache = require('./')
 
-const request = (url = '/', headers = {}) => ({
-  url,
-  header: name => headers[name]
-})
+const request = (url = '/', headers = {}) => {
+  // Node normalizes incoming header names; Express's header getter is also
+  // case-insensitive. Model that boundary without loading an HTTP framework.
+  const canonicalHeaders = {}
+  Object.keys(headers).forEach(name => { canonicalHeaders[name.toLowerCase()] = headers[name] })
+  return { url, header: name => canonicalHeaders[name.toLowerCase()] }
+}
 
 let client
 
@@ -105,7 +108,7 @@ test('documented options preserve cache writes, expiry, and callbacks', () => {
   reply(null, null)
   const body = { value: 'fixture' }
   res.sendCached(body)
-  expect(client.setex).toHaveBeenCalledWith('/alias.undefined.undefined', 45, JSON.stringify(body))
+  expect(client.setex).toHaveBeenCalledWith('["/alias",null,null,null]', 45, JSON.stringify(body))
   expect(res.send).toHaveBeenCalledWith(body)
   expect(next).toHaveBeenCalledTimes(1)
 })
@@ -123,21 +126,21 @@ test('waits for the Redis callback before continuing', () => {
   expect(client.setex).not.toHaveBeenCalled()
 })
 
-test('uses the existing URL and header cache key', () => {
+test('uses an unambiguous URL and header cache key', () => {
   const req = request('/route?x=1', {
     accepts: 'application/json',
     'accept-encoding': 'gzip'
   })
   req.originalUrl = '/mount/route?x=1'
   dispatch(cache({ duration: 30 }), req)
-  expect(client.get.mock.calls[0][0]).toBe('/route?x=1.application/json.gzip')
+  expect(client.get.mock.calls[0][0]).toBe('["/route?x=1",null,"application/json","gzip"]')
 })
 
 test('falls back to originalUrl when url is empty', () => {
   const req = request('')
   req.originalUrl = '/original'
   dispatch(cache({ duration: 30 }), req)
-  expect(client.get.mock.calls[0][0]).toBe('/original.undefined.undefined')
+  expect(client.get.mock.calls[0][0]).toBe('["/original",null,null,null]')
 })
 
 test('forwards lookup errors without sending or caching', () => {
@@ -168,7 +171,7 @@ test('sendCached serializes a miss with its key and expiry and sends the body', 
   res.sendCached(body)
   expect(client.setex).toHaveBeenCalledTimes(1)
   expect(client.setex).toHaveBeenCalledWith(
-    '/data.undefined.undefined',
+    '["/data",null,null,null]',
     45,
     JSON.stringify(body)
   )
@@ -223,7 +226,7 @@ test('an empty Redis value follows the existing cache-miss path', () => {
   reply(null, '')
   res.sendCached('replacement')
   expect(client.setex).toHaveBeenCalledWith(
-    '/.undefined.undefined',
+    '["/",null,null,null]',
     30,
     '"replacement"'
   )
@@ -239,11 +242,120 @@ test('pending requests retain their own cache keys and responses', () => {
   second.res.sendCached({ id: 2 })
   first.res.sendCached({ id: 1 })
   expect(client.setex.mock.calls).toEqual([
-    ['/second.undefined.undefined', 30, '{"id":2}'],
-    ['/first.undefined.undefined', 30, '{"id":1}']
+    ['["/second",null,null,null]', 30, '{"id":2}'],
+    ['["/first",null,null,null]', 30, '{"id":1}']
   ])
   expect(first.res.send).toHaveBeenCalledWith({ id: 1 })
   expect(second.res.send).toHaveBeenCalledWith({ id: 2 })
   expect(first.next).toHaveBeenCalledTimes(1)
   expect(second.next).toHaveBeenCalledTimes(1)
+})
+
+const storedValues = (entries = []) => {
+  const values = new Map(entries)
+  client.get = jest.fn((key, callback) => callback(null, values.has(key) ? values.get(key) : null))
+  client.setex = jest.fn((key, duration, value) => { values.set(key, value) })
+  return values
+}
+
+test('keeps standard Accept representations in separate cache entries', () => {
+  const values = storedValues()
+  const middleware = cache({ duration: 45 })
+  const first = dispatch(middleware, request('/report', { accept: 'application/json' }))
+  expect(first.res.send).not.toHaveBeenCalled()
+  first.res.sendCached({ format: 'json' })
+
+  const second = dispatch(middleware, request('/report', { accept: 'text/html' }))
+  expect(second.res.send).not.toHaveBeenCalled()
+  second.res.sendCached({ format: 'html' })
+
+  const jsonHit = dispatch(middleware, request('/report', { accept: 'application/json' }))
+  const htmlHit = dispatch(middleware, request('/report', { accept: 'text/html' }))
+  expect(jsonHit.res.send).toHaveBeenCalledWith({ format: 'json' })
+  expect(htmlHit.res.send).toHaveBeenCalledWith({ format: 'html' })
+  expect(values.size).toBe(2)
+  expect(client.setex).toHaveBeenCalledTimes(2)
+  expect(client.setex.mock.calls[0][1]).toBe(45)
+  expect(client.setex.mock.calls[1][1]).toBe(45)
+  ;[first, second, jsonHit, htmlHit].forEach(result => expect(result.next).toHaveBeenCalledTimes(1))
+})
+
+test('separates dotted URL and legacy header components', () => {
+  const values = storedValues()
+  const middleware = cache({ duration: 30 })
+  const firstRequest = request('/report.json', { accepts: 'application/json', 'accept-encoding': 'gzip' })
+  const secondRequest = request('/report', { accepts: 'json.application/json', 'accept-encoding': 'gzip' })
+  const first = dispatch(middleware, firstRequest)
+  first.res.sendCached({ route: 'first' })
+  const second = dispatch(middleware, secondRequest)
+  expect(second.res.send).not.toHaveBeenCalled()
+  second.res.sendCached({ route: 'second' })
+  expect(dispatch(middleware, firstRequest).res.send).toHaveBeenCalledWith({ route: 'first' })
+  expect(dispatch(middleware, secondRequest).res.send).toHaveBeenCalledWith({ route: 'second' })
+  expect(values.size).toBe(2)
+})
+
+test('retains legacy Accepts and encoding as independent key components', () => {
+  const middleware = cache({ duration: 30 })
+  ;[
+    { accept: 'application/json', accepts: 'legacy-a', 'accept-encoding': 'gzip' },
+    { accept: 'application/json', accepts: 'legacy-b', 'accept-encoding': 'gzip' },
+    { accept: 'application/json', accepts: 'legacy-a', 'accept-encoding': 'br' }
+  ].forEach(headers => dispatch(middleware, request('/legacy', headers)))
+  const keys = client.get.mock.calls.map(call => call[0])
+  expect(new Set(keys).size).toBe(3)
+})
+
+test('distinguishes absent, empty, and literal undefined header values', () => {
+  const middleware = cache({ duration: 30 })
+  ;['accept', 'accepts', 'accept-encoding'].forEach(name => {
+    client.get.mockClear()
+    ;[undefined, '', 'undefined'].forEach(value => {
+      const headers = {}
+      if (value !== undefined) headers[name] = value
+      dispatch(middleware, request('/empty', headers))
+    })
+    const keys = client.get.mock.calls.map(call => call[0])
+    expect(new Set(keys).size).toBe(3)
+  })
+})
+
+test('uses canonical header names consistently across casing', () => {
+  const middleware = cache({ duration: 30 })
+  dispatch(middleware, request('/case', {
+    Accept: 'application/json', Accepts: 'legacy', 'Accept-Encoding': 'gzip'
+  }))
+  dispatch(middleware, request('/case', {
+    accept: 'application/json', accepts: 'legacy', 'accept-encoding': 'gzip'
+  }))
+  expect(client.get.mock.calls[0][0]).toBe(client.get.mock.calls[1][0])
+  expect(client.get.mock.calls[0][0]).toBe('["/case","application/json","legacy","gzip"]')
+})
+
+test('preserves quoted and escaped header values in both reads and writes', () => {
+  const middleware = cache({ duration: 30 })
+  const headers = {
+    accept: 'application/json; profile="a.b"',
+    accepts: 'legacy\\value',
+    'accept-encoding': 'gzip'
+  }
+  const result = dispatch(middleware, request('/price?item=a.b', headers))
+  const key = client.get.mock.calls[0][0]
+  expect(JSON.parse(key)).toEqual(['/price?item=a.b', headers.accept, headers.accepts, 'gzip'])
+  reply(null, null)
+  result.res.sendCached({ price: 3 })
+  expect(client.setex.mock.calls[0][0]).toBe(key)
+})
+
+test('leaves earlier-format entries untouched while filling the new cache', () => {
+  const oldKey = '/migration.undefined.undefined'
+  const oldValue = '{"generation":"old"}'
+  const values = storedValues([[oldKey, oldValue]])
+  const result = dispatch(cache({ duration: 30 }), request('/migration'))
+  expect(result.res.send).not.toHaveBeenCalled()
+  expect(client.get.mock.calls[0][0]).toBe('["/migration",null,null,null]')
+  result.res.sendCached({ generation: 'new' })
+  expect(values.get(oldKey)).toBe(oldValue)
+  expect(values.size).toBe(2)
+  expect(client.setex).toHaveBeenCalledWith('["/migration",null,null,null]', 30, '{"generation":"new"}')
 })
